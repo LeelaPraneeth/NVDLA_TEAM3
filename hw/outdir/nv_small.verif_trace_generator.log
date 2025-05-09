@@ -1,0 +1,28 @@
+command: cd verif/testbench/trace_generator;make PROJECT=nv_small 
+/usr/bin/python             ../../../tools/bin/epython -p nv_small -u ../../../outdir/nv_small/verif/testbench/trace_generator/env/fp_func_dpi.cpp 
+FILE: ../../../outdir/nv_small/verif/testbench/trace_generator/env/fp_func_dpi.cpp unchanged
+/usr/bin/python             ../../../tools/bin/epython -p nv_small -u ../../../outdir/nv_small/verif/testbench/trace_generator/env/nvdla_tg_base_test.sv 
+FILE: ../../../outdir/nv_small/verif/testbench/trace_generator/env/nvdla_tg_base_test.sv unchanged
+/usr/bin/python             ../../../tools/bin/epython -p nv_small -u ../../../outdir/nv_small/verif/testbench/trace_generator/env/nvdla_tg_common.svh 
+FILE: ../../../outdir/nv_small/verif/testbench/trace_generator/env/nvdla_tg_common.svh unchanged
+/usr/bin/python             ../../../tools/bin/epython -p nv_small -u ../../../outdir/nv_small/verif/testbench/trace_generator/env/nvdla_tg_core.sv 
+FILE: ../../../outdir/nv_small/verif/testbench/trace_generator/env/nvdla_tg_core.sv unchanged
+/usr/bin/python             ../../../tools/bin/epython -p nv_small -u ../../../outdir/nv_small/verif/testbench/trace_generator/env/nvdla_tg_top.sv 
+FILE: ../../../outdir/nv_small/verif/testbench/trace_generator/env/nvdla_tg_top.sv unchanged
+/usr/bin/python             ../../../tools/bin/epython -p nv_small -u ../../../outdir/nv_small/verif/testbench/trace_generator/resources/nvdla_base_resource.sv 
+FILE: ../../../outdir/nv_small/verif/testbench/trace_generator/resources/nvdla_base_resource.sv unchanged
+/usr/bin/python             ../../../tools/bin/epython -p nv_small -u ../../../outdir/nv_small/verif/testbench/trace_generator/resources/nvdla_bdma_resource.sv 
+Traceback (most recent call last):
+  File "../../../tools/bin/epython", line 162, in <module>
+    process_file.exe_input()
+  File "../../../tools/bin/epython", line 117, in exe_input
+    self.codes_gen(tmp_file_hdl, scripts)
+  File "../../../tools/bin/epython", line 146, in codes_gen
+    codes = self.exe_python(scripts)
+  File "../../../tools/bin/epython", line 154, in exe_python
+    exec(scripts)
+  File "<string>", line 4, in <module>
+  File "../../.././verif/tools/spec2constrain.py", line 103, in enum_gen
+    print('%-50s = \'h%0x' % (str0,keys[idx]))
+TypeError: unicode argument expected, got 'str'
+make: *** [../../../outdir/nv_small/verif/testbench/trace_generator/resources/nvdla_bdma_resource.sv] Error 1

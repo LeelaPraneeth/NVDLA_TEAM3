@@ -1,0 +1,2966 @@
+# ===================================================================
+# File: syn/scripts/dc_run.tcl
+# NVDLA Open Source Project
+# Reference synthesis methodology script for Design Compiler
+#
+# Copyright (c) 2016 – 2017 NVIDIA Corporation. Licensed under the
+# NVDLA Open Hardware License; see the "LICENSE.txt" file that came
+# with this distribution for more information.
+# ===================================================================
+# =====================
+# Setup variables/procs
+# =====================
+set synMsgInfo "Info:"
+Info:
+set synMsgErr  "Error:"
+Error:
+set synMsgWarn "Warning:"
+Warning:
+# PROC: setVar => Utility proc to set flow variables 
+# Env vars get highest priority, followed by TCL vars, followed by default vars.
+proc setVar {var {default ""}} {
+    global $var
+    global synMsgInfo synMsgWarn
+    if {[info exists ::env($var)]} {
+        set $var $::env($var)
+        puts "$synMsgInfo Setting $var from env, value = [set $var]"
+    } elseif {[info exists $var]} {
+        set $var [set $var]
+        puts "$synMsgInfo Setting $var to [set $var]"
+    } else {
+        set $var $default
+        puts "${synMsgWarn} Setting $var to default value \"[set $var]\""
+        return
+    }
+}
+# PROC: profileSystem => Print general machine information. 
+proc profileSystem {} {
+    global env tcl_platform synMsgInfo
+
+    puts "${synMsgInfo} date = [clock format [clock seconds] -format {%c}]"
+    puts "${synMsgInfo} cwd = [pwd]"
+    set myHost [info hostname]
+    puts "${synMsgInfo} executing on $myHost"
+    exec lsb_release -idrc
+    exec lscpu
+}
+# PROC: writeReports => Common reporting proc. 
+proc writeReports {{prefix "default"}} {
+    global synMsgInfo
+    global REPORT_DIR MODULE
+    set syn_report_max_paths               50
+    set syn_report_nworst                  5
+    set syn_report_simple                  0
+    set path_graph_max_paths 10000
+    set syn_report_flags   "-input_pins -nets"
+    set timing_flags [concat -nosplit -nworst $syn_report_nworst -max_paths $syn_report_max_paths -significant_digits 4 -attribute]
+    if { [shell_is_in_topographical_mode] } {
+        set timing_flags [concat $timing_flags -nets -physical -trans -cap] 
+    }
+    if {[info exists syn_report_flags]} {
+        set timing_flags [concat $timing_flags $syn_report_flags]
+    }
+
+    set module_report ${REPORT_DIR}/${MODULE}.${prefix}.report
+    suppress_message [list "TIM-175"]
+    redirect $module_report { report_qor -significant_digits 4 }
+    unsuppress_message [list "TIM-175"]
+    redirect -append $module_report { eval { report_timing } $timing_flags }
+    redirect -append $module_report { report_constraint -all -sig 4 -nosplit }
+    if { [shell_is_in_topographical_mode] } {
+            redirect -append $module_report { report_congestion }
+    }
+    redirect -append $module_report { report_resources -hierarchy }
+    redirect -append $module_report { report_clock -nosplit }
+    redirect -append $module_report { report_clock -skew -nosplit }
+    redirect -append $module_report { eval report_power -nosplit }
+    redirect -append $module_report { report_threshold_voltage_group }
+    #redirect -append $module_report { nvSynGeneral::reportLibAttributes }
+    redirect -append $module_report { report_design }
+    redirect -append $module_report { report_reference -hierarchy }
+
+}
+# =================
+# ===== BEGIN =====
+# =================
+# Print some information on host OS and resources
+profileSystem
+Info: date = Tue May  6 21:56:54 2025
+Info: cwd = /home/cegrad/lpuli012/CS220_Project/hw/syn
+Info: executing on bender.engr.ucr.edu
+Architecture:          x86_64
+CPU op-mode(s):        32-bit, 64-bit
+Byte Order:            Little Endian
+CPU(s):                48
+On-line CPU(s) list:   0-47
+Thread(s) per core:    2
+Core(s) per socket:    12
+Socket(s):             2
+NUMA node(s):          2
+Vendor ID:             GenuineIntel
+CPU family:            6
+Model:                 85
+Model name:            Intel(R) Xeon(R) Silver 4214 CPU @ 2.20GHz
+Stepping:              7
+CPU MHz:               2200.000
+BogoMIPS:              4400.00
+Virtualization:        VT-x
+L1d cache:             32K
+L1i cache:             32K
+L2 cache:              1024K
+L3 cache:              16896K
+NUMA node0 CPU(s):     0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46
+NUMA node1 CPU(s):     1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43,45,47
+Flags:                 fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc aperfmperf eagerfpu pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid dca sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch epb cat_l3 cdp_l3 invpcid_single intel_ppin ssbd mba rsb_ctxsw ibrs ibpb stibp ibrs_enhanced tpr_shadow vnmi flexpriority ept vpid fsgsbase tsc_adjust bmi1 hle avx2 smep bmi2 erms invpcid rtm cqm mpx rdt_a avx512f avx512dq rdseed adx smap clflushopt clwb intel_pt avx512cd avx512bw avx512vl xsaveopt xsavec xgetbv1 cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local dtherm ida arat pln pts pku ospke avx512_vnni md_clear spec_ctrl intel_stibp flush_l1d arch_capabilities
+# Print env snapshot into the log
+foreach key [array names env] {
+    global synMsgInfo
+        puts "${synMsgInfo} (ENV) $key = $env($key)"
+}
+Info: (ENV) CAFFE_ROOT = /usr/local/caffe
+Info: (ENV) OA_UNSUPPORTED_PLAT = linux_rhel40_gcc44x
+Info: (ENV) CAD_HOME = /usr/local/cadence
+Info: (ENV) LS_COLORS = rs=0:di=38;5;27:ln=38;5;51:mh=44;38;5;15:pi=40;38;5;11:so=38;5;13:do=38;5;5:bd=48;5;232;38;5;11:cd=48;5;232;38;5;3:or=48;5;232;38;5;9:mi=05;48;5;232;38;5;15:su=48;5;196;38;5;15:sg=48;5;11;38;5;16:ca=48;5;196;38;5;226:tw=48;5;10;38;5;16:ow=48;5;10;38;5;21:st=48;5;21;38;5;15:ex=38;5;34:*.tar=38;5;9:*.tgz=38;5;9:*.arc=38;5;9:*.arj=38;5;9:*.taz=38;5;9:*.lha=38;5;9:*.lz4=38;5;9:*.lzh=38;5;9:*.lzma=38;5;9:*.tlz=38;5;9:*.txz=38;5;9:*.tzo=38;5;9:*.t7z=38;5;9:*.zip=38;5;9:*.z=38;5;9:*.Z=38;5;9:*.dz=38;5;9:*.gz=38;5;9:*.lrz=38;5;9:*.lz=38;5;9:*.lzo=38;5;9:*.xz=38;5;9:*.bz2=38;5;9:*.bz=38;5;9:*.tbz=38;5;9:*.tbz2=38;5;9:*.tz=38;5;9:*.deb=38;5;9:*.rpm=38;5;9:*.jar=38;5;9:*.war=38;5;9:*.ear=38;5;9:*.sar=38;5;9:*.rar=38;5;9:*.alz=38;5;9:*.ace=38;5;9:*.zoo=38;5;9:*.cpio=38;5;9:*.7z=38;5;9:*.rz=38;5;9:*.cab=38;5;9:*.jpg=38;5;13:*.jpeg=38;5;13:*.gif=38;5;13:*.bmp=38;5;13:*.pbm=38;5;13:*.pgm=38;5;13:*.ppm=38;5;13:*.tga=38;5;13:*.xbm=38;5;13:*.xpm=38;5;13:*.tif=38;5;13:*.tiff=38;5;13:*.png=38;5;13:*.svg=38;5;13:*.svgz=38;5;13:*.mng=38;5;13:*.pcx=38;5;13:*.mov=38;5;13:*.mpg=38;5;13:*.mpeg=38;5;13:*.m2v=38;5;13:*.mkv=38;5;13:*.webm=38;5;13:*.ogm=38;5;13:*.mp4=38;5;13:*.m4v=38;5;13:*.mp4v=38;5;13:*.vob=38;5;13:*.qt=38;5;13:*.nuv=38;5;13:*.wmv=38;5;13:*.asf=38;5;13:*.rm=38;5;13:*.rmvb=38;5;13:*.flc=38;5;13:*.avi=38;5;13:*.fli=38;5;13:*.flv=38;5;13:*.gl=38;5;13:*.dl=38;5;13:*.xcf=38;5;13:*.xwd=38;5;13:*.yuv=38;5;13:*.cgm=38;5;13:*.emf=38;5;13:*.axv=38;5;13:*.anx=38;5;13:*.ogv=38;5;13:*.ogx=38;5;13:*.aac=38;5;45:*.au=38;5;45:*.flac=38;5;45:*.mid=38;5;45:*.midi=38;5;45:*.mka=38;5;45:*.mp3=38;5;45:*.mpc=38;5;45:*.ogg=38;5;45:*.ra=38;5;45:*.wav=38;5;45:*.axa=38;5;45:*.oga=38;5;45:*.spx=38;5;45:*.xspf=38;5;45:
+Info: (ENV) BUILD_NAME = nvdla_syn_20250506_2003
+Info: (ENV) HOME = /home/cegrad/lpuli012
+Info: (ENV) RTL_EXTENSIONS = .v .sv .gv
+Info: (ENV) RETIME_TRANSFORM = multiclass
+Info: (ENV) RETIME_LIST = 
+Info: (ENV) TB_PATH = top.nvdla_top
+Info: (ENV) LOGNAME = lpuli012
+Info: (ENV) HISTSIZE = 1000
+Info: (ENV) RTL_INCLUDE_EXTENSIONS = .vh .svh
+Info: (ENV) VCS_HOME = /usr/local/synopsys/vcs/T-2022.06-1
+Info: (ENV) SSH_CLIENT = 146.70.127.249 61002 22
+Info: (ENV) DEF_DIR = nvdla_syn_20250506_2003/def
+Info: (ENV) HOST = bender.engr.ucr.edu
+Info: (ENV) CDS_INST = /usr/local/cadence
+Info: (ENV) ICV_HOME_DIR = /usr/local/synopsys/icvalidator/T-2022.03-SP2-1
+Info: (ENV) VCS_ARCH_OVERRIDE = linux
+Info: (ENV) LOG_DIR = nvdla_syn_20250506_2003/log
+Info: (ENV) SHELL = /bin/bash
+Info: (ENV) NVDLA_ROOT = /home/cegrad/lpuli012/CS220_Project/hw/
+Info: (ENV) SAED32_28_PDK = /usr/local/synopsys/pdk/SAED3228nm_iPDK
+Info: (ENV) XDG_SESSION_ID = 16033
+Info: (ENV) SNPSLMD_LICENSE_FILE = 27000@synopsys.engr.ucr.edu
+Info: (ENV) CDS_AUTO_32BIT = NONE
+Info: (ENV) SNPSLMD_QUEUE = true
+Info: (ENV) DW_ROOT = /usr/local/synopsys/syn/T-2022.03-SP3/dw
+Info: (ENV) USER = lpuli012
+Info: (ENV) VCS_PATHMAP_PRELOAD_DONE = 1
+Info: (ENV) DLIB_DIR = nvdla_syn_20250506_2003/design_lib
+Info: (ENV) MANPATH = :/opt/nvidia/hpc_sdk/Linux_x86_64/23.9/compilers/man
+Info: (ENV) KRB5CCNAME = FILE:/tmp/krb5cc_23179_RxIbYD
+Info: (ENV) PERL = /usr/local/cadence/XCELIUM2409/tools.lnx86/perl-5.8.8/bin/perl
+Info: (ENV) DB_DIR = nvdla_syn_20250506_2003/db
+Info: (ENV) TARGET_LIB = /usr/local/synopsys/pdk/SAED32_EDK/lib/stdcell_rvt/db_nldm/saed32rvt_ss0p75v125c.db
+Info: (ENV) SCRIPTS_DIR = nvdla_syn_20250506_2003/scripts
+Info: (ENV) QA_MODE = 
+Info: (ENV) SYNOPSYS_SYN_PATH_PROFILER = 1
+Info: (ENV) MIN_ROUTING_LAYER = 
+Info: (ENV) MLM_LICENSE_FILE = 27000@matlab.engr.ucr.edu
+Info: (ENV) RELEASE_DIR = /home/libs/t194_syn/1399272_08212017
+Info: (ENV) CDS_LIC_FILE = 5280@cadence.engr.ucr.edu
+Info: (ENV) SHLVL = 2
+Info: (ENV) HORIZONTAL_LAYERS = 
+Info: (ENV) SAIF_FILE = 
+Info: (ENV) CONS = cons
+Info: (ENV) MODULEPATH = /usr/share/Modules/modulefiles:/etc/modulefiles
+Info: (ENV) DC_PATH = /usr/local/synopsys/syn/T-2022.03-SP3/bin
+Info: (ENV) RAM_LIB_DIR = ../tools/data
+Info: (ENV) DONT_USE_LIST = 
+Info: (ENV) SSH_CONNECTION = 146.70.127.249 61002 169.235.16.45 22
+Info: (ENV) RTL_DEPS = nvdla_syn_20250506_2003/scripts/NV_NVDLA_partition_m.files.vc
+Info: (ENV) PATH = /home/cegrad/lpuli012/bin:/usr/local/cadence/XCELIUM2409/tools.lnx86/perl-5.8.8/bin:/usr/local/anaconda2/bin:/opt/nvidia/hpc_sdk/Linux_x86_64/23.9/compilers/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/usr/local/cadence/IC618/tools/bin:/usr/local/cadence/IC618/tools/dfII/bin:/usr/local/cadence/GENUS211/bin:/usr/local/cadence/SPECTRE231/bin:/usr/local/cadence/SPECTRE231/tools/dfII/bin:/usr/local/cadence/SPECTRE231/tools/bin:/usr/local/cadence/SPECTRE231/tools/cdsdoc/bin:/usr/local/cadence/SPECTRE231/tools/jre/bin:/usr/local/cadence/ASSURA41/tools/assura/bin:/usr/local/cadence/ASSURA41/tools/bin:/usr/local/cadence/QUANTUS231/bin:/usr/local/cadence/QUANTUS231/tools/bin:/usr/local/cadence/QUANTUS231/tools/dfII/bin:/usr/local/cadence/QUANTUS231/tools/cdsdoc/bin:/usr/local/cadence/QUANTUS231/tools/jre/bin:/usr/local/cadence/XCELIUM2409/tools.lnx86/bin/64bit:/usr/local/synopsys/installer:/usr/local/synopsys/verdi/V-2023.12-SP2-5/bin:/usr/local/synopsys/verdi_supp/V-2023.12-SP2-5/bin:/usr/local/synopsys/hspice/T-2022.06-2/hspice/bin:/usr/local/synopsys/icc2/T-2022.03-SP3/bin:/usr/local/synopsys/icc/Q-2019.12-SP1/bin:/usr/local/synopsys/starrc/K-2015.12/bin:/usr/local/synopsys/icvalidator/V-2023.12-SP5-7//bin:/usr/local/synopsys/icvalidator/V-2023.12-SP5-7/bin/LINUX64_L26el:/usr/local/synopsys/customcompiler/T-2022.06-2/bin:/usr/local/synopsys/primewave/T-2022.06-2/bin:/usr/local/synopsys/prime/T-2022.03-SP3/bin:/usr/local/synopsys/syn/T-2022.03-SP3/bin:/usr/local/synopsys/sentaurus/T-2022.03-SP1/bin:/usr/local/synopsys/vcs/T-2022.06-1/bin:/usr/local/synopsys/vcs/T-2022.06-1/linux/bin:/usr/local/synopsys/primerail/M-2016.12-SP2/bin:/usr/bin/:/usr/ucb:/usr/bsd:/usr/sbin:/inst/bin:/usr/local/bin/X11:/usr/local/bin:/usr/openwin/bin:/usr/etc:/bin:/usr/bin/X11:/sbin:/usr/X11R6/bin:/home/cegrad/lpuli012/bin
+Info: (ENV) SSH_TTY = /dev/pts/14
+Info: (ENV) LC_ALL = C
+Info: (ENV) EDITOR = vi
+Info: (ENV) PROJECT = nv_small
+Info: (ENV) PAGER = more
+Info: (ENV) ASSURAHOME = /usr/local/cadence/ASSURA41
+Info: (ENV) PT_PATH = /home/tools/synopsys/pt_2016.12-SP3-2/bin
+Info: (ENV) LD_LIBRARY_PATH = .:.:/usr/local/lib:/inst/lib:/usr/openwin/lib:/opt/lib:/usr/local/synopsys/syn/T-2022.03-SP3/lib/linux64:/usr/local/synopsys/syn/T-2022.03-SP3/lib/AMD.64
+Info: (ENV) TIGHTEN_CGE = 0
+Info: (ENV) LESSOPEN = ||/usr/bin/lesspipe.sh %s
+Info: (ENV) VERTICAL_LAYERS = 
+Info: (ENV) HISTCONTROL = ignoredups
+Info: (ENV) MODULESHOME = /usr/share/Modules
+Info: (ENV) CDS_AUTO_64BIT = ALL
+Info: (ENV) LOADEDMODULES = 
+Info: (ENV) SSH_ASKPASS = /usr/libexec/openssh/gnome-ssh-askpass
+Info: (ENV) PWD = /home/cegrad/lpuli012/CS220_Project/hw/syn
+Info: (ENV) RTL_SEARCH_PATH =      /home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/apb2csb
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/bdma
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/cacc
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/car
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/cbuf
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/cdma
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/cdp
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/cfgrom
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/cmac
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/csb_master
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/csc
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/glb
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/nocif
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/pdp
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/retiming
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/rubik
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/sdp
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/top /home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/rams/synth \    
+/home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/vlibs /home/cegrad/lpuli012/CS220_Project/generated_rams 
+Info: (ENV) LMC_HOME = 
+Info: (ENV) COMMAND_PREFIX = 
+Info: (ENV) SAED90_PDK = /usr/local/synopsys/pdk/SAED_PDK90nm
+Info: (ENV) VCS_STACK_EXEC = true
+Info: (ENV) VCS_HEAP_EXEC = true
+Info: (ENV) TLUPLUS_FILE = 
+Info: (ENV) SYNOPSYS_SYSTYPE = LINUX63_L26el
+Info: (ENV) DC_NUM_CORES = 1
+Info: (ENV) TF_FILE = 
+Info: (ENV) CONS_DIR = nvdla_syn_20250506_2003/cons
+Info: (ENV) SEARCH_PATH = . nvdla_syn_20250506_2003/src
+Info: (ENV) CLK_GATING_CELL = 
+Info: (ENV) CDSHOME = /usr/local/cadence/IC618
+Info: (ENV) TLUPLUS_MAPPING_FILE = 
+Info: (ENV) VCS_EXEC_DONE = 1
+Info: (ENV) EXTRA_RTL =      /home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/nvdla/nocif/NV_NVDLA_XXIF_libs.v 
+Info: (ENV) ARCH = linux64
+Info: (ENV) SYN_MODE = wlm
+Info: (ENV) SNPS_VCS_INTERNAL_COMPRESSOR = /usr/local/synopsys/syn/T-2022.03-SP3/lz4/linux64/bin/lz4
+Info: (ENV) HOSTNAME = bender.engr.ucr.edu
+Info: (ENV) INCREMENTAL_RECOMPILE_COUNT = 1
+Info: (ENV) FLEXLM_BORROWFILE = /home/cegrad/lpuli012/.bender.engr.ucr.edu-borrow.txt
+Info: (ENV) LM_LICENSE_FILE = 27000@synopsys.engr.ucr.edu
+Info: (ENV) MW_LIB = 
+Info: (ENV) MAIL = /var/spool/mail/lpuli012
+Info: (ENV) LINK_LIB = 
+Info: (ENV) INSTANCE = u_partition_ma u_partition_mb
+Info: (ENV) XDG_DATA_DIRS = /home/cegrad/lpuli012/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share
+Info: (ENV) SYNOPSYS_TRACE = 
+Info: (ENV) WIRELOAD_MODEL_FILE = 
+Info: (ENV) TOP_NAMES = NV_NVDLA_partition_a NV_NVDLA_partition_c NV_NVDLA_partition_o NV_NVDLA_partition_m NV_NVDLA_partition_p
+Info: (ENV) BASH_FUNC_module() = () {  eval `/usr/bin/modulecmd bash $*`
+}
+Info: (ENV) DONT_UNGROUP_LIST = 
+Info: (ENV) DEF = def
+Info: (ENV) AREA_RECOVERY = 1
+Info: (ENV) SYNOPSYS = /usr/local/synopsys/syn/T-2022.03-SP3
+Info: (ENV) TERM = xterm-256color
+Info: (ENV) QT_GRAPHICSSYSTEM_CHECKED = 1
+Info: (ENV) MAX_ROUTING_LAYER = 
+Info: (ENV) MW_DIR = nvdla_syn_20250506_2003/mw
+Info: (ENV) REPORT_DIR = nvdla_syn_20250506_2003/report
+Info: (ENV) FV_DIR = nvdla_syn_20250506_2003/fv
+Info: (ENV) XDG_RUNTIME_DIR = /run/user/23179
+Info: (ENV) CDS_IC = /usr/local/cadence/IC618/IC618
+Info: (ENV) NET_DIR = nvdla_syn_20250506_2003/net
+Info: (ENV) RTL_INCLUDE_SEARCH_PATH =      /home/cegrad/lpuli012/CS220_Project/hw//outdir/nv_small/vmod/include 
+Info: (ENV) MODULE = NV_NVDLA_partition_m
+Info: (ENV) WIRELOAD_MODEL_NAME = 
+Info: (ENV) PERL5LIB = /home/cegrad/lpuli012/perl5/lib/perl5:/home/cegrad/lpuli012/perl5_nvdla/lib/perl5:
+# SYN_MODE: "wlm" (wireload model - DEFAULT) , "dcg" (physical, using -spg) or "de" (physical, using Design Explorer)
+setVar SYN_MODE wlm
+Info: Setting SYN_MODE from env, value = wlm
+# Name of top-level design
+setVar MODULE
+Info: Setting MODULE from env, value = NV_NVDLA_partition_m
+# Directories
+setVar CONS_DIR cons
+Info: Setting CONS_DIR from env, value = nvdla_syn_20250506_2003/cons
+setVar DB_DIR db
+Info: Setting DB_DIR from env, value = nvdla_syn_20250506_2003/db
+setVar LOG_DIR log
+Info: Setting LOG_DIR from env, value = nvdla_syn_20250506_2003/log
+setVar REPORT_DIR report
+Info: Setting REPORT_DIR from env, value = nvdla_syn_20250506_2003/report
+setVar NET_DIR net
+Info: Setting NET_DIR from env, value = nvdla_syn_20250506_2003/net
+setVar FV_DIR fv
+Info: Setting FV_DIR from env, value = nvdla_syn_20250506_2003/fv
+setVar MW_DIR mw
+Info: Setting MW_DIR from env, value = nvdla_syn_20250506_2003/mw
+setVar DLIB_DIR design_lib
+Info: Setting DLIB_DIR from env, value = nvdla_syn_20250506_2003/design_lib
+setVar DEF_DIR def
+Info: Setting DEF_DIR from env, value = nvdla_syn_20250506_2003/def
+setVar SCRIPTS_DIR scripts
+Info: Setting SCRIPTS_DIR from env, value = nvdla_syn_20250506_2003/scripts
+setVar SEARCH_PATH "."
+Info: Setting SEARCH_PATH from env, value = . nvdla_syn_20250506_2003/src
+setVar RTL_EXTENSIONS ".v .sv .gv"
+Info: Setting RTL_EXTENSIONS from env, value = .v .sv .gv
+setVar SAIF_FILE ""
+Info: Setting SAIF_FILE from env, value = 
+setVar TB_PATH "top.nvdla_top"
+Info: Setting TB_PATH from env, value = top.nvdla_top
+setVar INSTANCE ""
+Info: Setting INSTANCE from env, value = u_partition_ma u_partition_mb
+proc verilog_inst_to_dc_inst { inst_path } {
+    return [regsub -all {\.} $inst_path "/"]
+}
+# Dont proceed if you cant find the scripts directory for app vars and other settings. 
+if {![file exists $SCRIPTS_DIR]} {
+   puts "${synMsgErr} Unable to proceed, please specify SCRITPS_DIR. "
+   exit 1
+}
+# Extensions
+setVar DB_EXT ddc
+Warning: Setting DB_EXT to default value "ddc"
+setVar NET_EXT gv
+Warning: Setting NET_EXT to default value "gv"
+setVar SDC_VER "1.7"
+Warning: Setting SDC_VER to default value "1.7"
+# Library settings
+setVar TARGET_LIB ""
+Info: Setting TARGET_LIB from env, value = /usr/local/synopsys/pdk/SAED32_EDK/lib/stdcell_rvt/db_nldm/saed32rvt_ss0p75v125c.db
+setVar LINK_LIB ""
+Info: Setting LINK_LIB from env, value = 
+setVar MW_LIB ""
+Info: Setting MW_LIB from env, value = 
+setVar TF_FILE
+Info: Setting TF_FILE from env, value = 
+setVar TLUPLUS_FILE
+Info: Setting TLUPLUS_FILE from env, value = 
+setVar TLUPLUS_MAPPING_FILE
+Info: Setting TLUPLUS_MAPPING_FILE from env, value = 
+setVar DONT_USE_LIST ""
+Info: Setting DONT_USE_LIST from env, value = 
+setVar MIN_ROUTING_LAYER ""
+Info: Setting MIN_ROUTING_LAYER from env, value = 
+setVar MAX_ROUTING_LAYER ""
+Info: Setting MAX_ROUTING_LAYER from env, value = 
+setVar CLOCK_GATING_CELL ""
+Warning: Setting CLOCK_GATING_CELL to default value ""
+setVar DONT_UNGROUP_LIST ""
+Info: Setting DONT_UNGROUP_LIST from env, value = 
+setVar HORIZONTAL_LAYERS ""
+Info: Setting HORIZONTAL_LAYERS from env, value = 
+setVar VERTICAL_LAYERS ""
+Info: Setting VERTICAL_LAYERS from env, value = 
+setVar QA_MODE ""
+Info: Setting QA_MODE from env, value = 
+if {[shell_is_in_exploration_mode]} {
+    set de_log_html_filename ${LOG_DIR}/${MODULE}_de.html
+}
+set_app_var link_path ${LINK_LIB}
+set_app_var target_library ${TARGET_LIB}
+/usr/local/synopsys/pdk/SAED32_EDK/lib/stdcell_rvt/db_nldm/saed32rvt_ss0p75v125c.db
+set library_name [file rootname [file tail [lindex ${TARGET_LIB} 0]]]
+saed32rvt_ss0p75v125c
+# SVF, to guide Formality
+set_svf ${FV_DIR}/${MODULE}/${MODULE}.svf
+1
+puts "${synMsgInfo} Setting SVF to  ${FV_DIR}/${MODULE}/${MODULE}.svf"
+Info: Setting SVF to  nvdla_syn_20250506_2003/fv/NV_NVDLA_partition_m/NV_NVDLA_partition_m.svf
+# Start keeping track of name changes
+saif_map -start
+Information: The SAIF name mapping information database is now active. (PWR-602)
+1
+# Misc Synthesis recipe variables
+setVar DC_NUM_CORES 1; # Assume calling scripts sets this up correctly
+Info: Setting DC_NUM_CORES from env, value = 1
+setVar TIGHTEN_CGE 1; # Choose whether or not to overconstrain CG enable paths. 
+Info: Setting TIGHTEN_CGE from env, value = 0
+set suppress_errors "VER-130 UID-95"
+VER-130 UID-95
+set_host_options -max_cores ${DC_NUM_CORES}
+1
+# Set up some application vars
+if {[file exists "${SCRIPTS_DIR}/dc_app_vars.tcl"]} {
+    puts "${synMsgInfo} Sourcing ${SCRIPTS_DIR}/dc_app_vars.tcl"
+    source -echo -verbose ${SCRIPTS_DIR}/dc_app_vars.tcl
+}
+Info: Sourcing nvdla_syn_20250506_2003/scripts/dc_app_vars.tcl
+# ===================================================================
+# File: syn/scripts/dc_app_vars.tcl
+# NVDLA Open Source Project
+# Reference application variables for Design Compiler to get the 
+# best QoR with Design Compiler. 
+#
+# Copyright (c) 2016 – 2017 NVIDIA Corporation. Licensed under the
+# NVDLA Open Hardware License; see the "LICENSE.txt" file that came
+# with this distribution for more information.
+# ===================================================================
+# HDL Compiler settings
+set hdl_preferred_license                       verilog
+verilog
+set hdlin_preserve_sequential                   true
+true
+set hdlin_check_no_latch                                true
+true
+set hdlin_enable_rtldrc_info                    false
+false
+set hdlin_infer_hdlc_compliant_set_reset        true
+Information: Use of Variable 'hdlin_infer_hdlc_compliant_set_reset' is not recommended. This variable will be obsolete in a future release. (INFO-101)
+true
+set hdlin_remove_set_reset_from_activation      true
+true
+set hdlin_infer_complex_enable                  true
+Information: Use of Variable 'hdlin_infer_complex_enable' is not recommended. This variable will be obsolete in a future release. (INFO-101)
+true
+set hdlin_no_group_register                     true
+Information: Use of Variable 'hdlin_no_group_register' is not recommended. This variable will be obsolete in a future release. (INFO-101)
+true
+set hdlin_vhdl93_concat                         TRUE
+TRUE
+# Allow PG pins connected in RTL.
+set dc_allow_rtl_pg                 true
+true
+set mv_allow_upf_cells_without_upf  true
+true
+set_app_var mv_upf_tracking false
+Information: UPF tracking variable will be marked read-only in the current Design Compiler session. (UPF-402)
+false
+# Allow reset timing analysis
+set enable_recovery_removal_arcs          true
+true
+# Variables affecting wall time of compilations vs quality
+set compile_limit_down_sizing                        false  
+false
+set compile_use_fast_sequential_mode                 false
+false
+set timing_enable_multiple_clocks_per_reg true
+true
+set timing_disable_data_checks false
+false
+set_app_var sh_continue_on_error false
+false
+set timing_separate_clock_gating_group true
+true
+set ignore_tf_error      true
+true
+# Design naming styles
+# set template_naming_style                        "%s_%p_${module}"
+set template_parameter_style                     %d
+%d
+set template_separator_style                     _
+_
+set port_complement_naming_style                 %s_
+%s_
+# Verilog output 
+set verilogout_higher_designs_first              false
+false
+set verilogout_no_tri                            true
+true
+set verilogout_equation                          false
+false
+set verilogout_single_bit                        false
+false
+set write_name_nets_same_as_ports                true
+true
+set bind_unused_hierarchical_pins            false
+false
+# this defaulted to true in 2003.12, but don't want it on by default
+# enable with caution -- it could have fec implications.
+set fsm_auto_inferring                    false
+false
+set compile_log_format                       "%elap_time %area %wns(.4) %tns(.4) %drc %endpoint"
+%elap_time %area %wns(.4) %tns(.4) %drc %endpoint
+# so DC doesn't change the type of clock gating cell that we specify
+set power_do_not_size_icg_cells                  true
+true
+# Required for compile_ultra -gate_clock to match -global flag in
+# insert_clock_gating
+set compile_clock_gating_through_hierarchy       true
+true
+# Configure advanced datapath options
+set_dp_smartgen_options -4to2_compressor_cell false -carry_select_adder_cell false
+1
+set optimize_reg_no_generic_logic_for_comp_incr  false
+false
+# don't put set_load commands in the SDC we write out
+set write_sdc_output_lumped_net_capacitance false
+false
+set lib_cell_using_delay_from_ccs            false
+false
+set power_cg_print_enable_conditions             true
+true
+set power_cg_print_enable_conditions_max_terms   25
+25
+set high_fanout_net_threshold                   0
+0
+set compile_disable_hierarchical_inverter_opt   true
+true
+set compile_seqmap_enable_output_inversion      false
+false
+set optimize_reg_rewire_clock_gating false
+false
+set compile_retime_exception_registers true 
+true
+## limit synthesis to try and keep hieracrchy names.
+if {![shell_is_in_exploration_mode]} {
+        set compile_seqmap_propagate_high_effort true
+        set compile_seqmap_propagate_constants true
+        #set_verification_priority [current_design] -high
+        set compile_timing_high_effort true
+        set compile_ultra_ungroup_dw true
+        set compile_ultra_ungroup_small_hierarchies true
+}
+true
+set dont_bind_unused_pins_to_logic_constant  false
+false
+set compile_seqmap_propagate_constants_size_only  true
+true
+if {[shell_is_in_topographical_mode] && ![shell_is_in_exploration_mode]} {
+        set physopt_enable_via_res_support "true"; # Enables support of via resistance for virtual route RC estimation.
+        set dct_prioritize_area_correlation "true"; # prioritize area correlation between DC-T and ICC.
+        
+        set_self_gating_options \
+              -max_fanout 100   \
+              -min_fanout 25
+}
+if {![shell_is_in_topographical_mode]} {
+
+    # Variables affecting wall time of compilations vs quality
+    set compile_use_fast_delay_mode              true
+    set hdlin_enable_vpp                         true
+    
+}
+Information: Variable 'compile_use_fast_delay_mode' is obsolete and is being ignored. (INFO-100)
+Information: Variable 'hdlin_enable_vpp' is obsolete and is being ignored. (INFO-100)
+true
+# Enable physical flow in DCE
+if {[shell_is_in_exploration_mode]} {
+        set_app_var  de_enable_physical_flow true
+}
+# Make DC-G use the track definitions and not fill in the gaps with more routing resource!
+#set_route_zrt_common_options -track_auto_fill false
+# force all reporting into work directory  (issue NV_GR_GPMSD_pri_target)
+define_design_lib WORK -path     ${DLIB_DIR}/${MODULE}/work
+1
+set alib_library_analysis_path   ${DLIB_DIR}/${MODULE}
+nvdla_syn_20250506_2003/design_lib/NV_NVDLA_partition_m
+# Read logical/timing libs
+puts "${synMsgInfo} Read library and create alib"
+Info: Read library and create alib
+read_file -format db $target_library
+Loading db file '/usr/local/synopsys/syn/T-2022.03-SP3/libraries/syn/gtech.db'
+Loading db file '/usr/local/synopsys/syn/T-2022.03-SP3/libraries/syn/standard.sldb'
+  Loading link library 'gtech'
+Loading db file '/usr/local/synopsys/pdk/SAED32_EDK/lib/stdcell_rvt/db_nldm/saed32rvt_ss0p75v125c.db'
+Loaded 0 designs.
+# Search path
+set_app_var search_path "${SEARCH_PATH}"
+. nvdla_syn_20250506_2003/src
+# ungroup the clock gate level of hierarchy
+set power_cg_flatten true
+true
+######################
+## Section : synthesis
+#####################
+setVar RTL_DEPS ""
+Info: Setting RTL_DEPS from env, value = nvdla_syn_20250506_2003/scripts/NV_NVDLA_partition_m.files.vc
+set vcsOpt "{-f $RTL_DEPS}"
+{-f nvdla_syn_20250506_2003/scripts/NV_NVDLA_partition_m.files.vc}
+catch {eval {analyze -format sverilog -work WORK} -vcs $vcsOpt} analyzeStatus
+Running PRESTO HDLC
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_partition_m.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_cmac.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_reset.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_sync3d.v
+Warning:  nvdla_syn_20250506_2003/src/NV_NVDLA_sync3d.v:22: The macro 'SYNC_PL_NOSYNTHESIS_NOSYNTH_GCS' you are attempting to undefine with the '`undef' directive is not defined. (VER-921)
+Warning:  nvdla_syn_20250506_2003/src/NV_NVDLA_sync3d.v:22: Improper usage of internally defined macros: not recommended to undefine the macro 'SYNC_PL_NOSYNTHESIS_NOSYNTH_GCS' that was defined on the command line (VER-403)
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_sync3d_s.v
+Warning:  nvdla_syn_20250506_2003/src/NV_NVDLA_sync3d_s.v:24: The macro 'SYNC_PL_NOSYNTHESIS_NOSYNTH_GCS' you are attempting to undefine with the '`undef' directive is not defined. (VER-921)
+Warning:  nvdla_syn_20250506_2003/src/NV_NVDLA_sync3d_s.v:24: Improper usage of internally defined macros: not recommended to undefine the macro 'SYNC_PL_NOSYNTHESIS_NOSYNTH_GCS' that was defined on the command line (VER-403)
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_XXIF_libs.v
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Compiling source file nvdla_syn_20250506_2003/src/MUX2HDD2.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_BLKBOX_SRC0.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_core.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v
+Compiling source file nvdla_syn_20250506_2003/src/sync3d.v
+Compiling source file nvdla_syn_20250506_2003/src/sync3d_s_ppp.v
+Compiling source file nvdla_syn_20250506_2003/src/sync_reset.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_XXIF_libs.v
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Compiling source file nvdla_syn_20250506_2003/src/MUX2D4.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_cfg.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_mac.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_slcg.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_REG_dual.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_REG_single.v
+Compiling source file nvdla_syn_20250506_2003/src/OR2D1.v
+Compiling source file nvdla_syn_20250506_2003/src/p_SSYNC2DO_C_PP.v
+Compiling source file nvdla_syn_20250506_2003/src/p_SSYNC3DO.v
+Compiling source file nvdla_syn_20250506_2003/src/p_SSYNC3DO_S_PPP.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_XXIF_libs.v
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Compiling source file nvdla_syn_20250506_2003/src/NV_CLK_gate_power.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_XXIF_libs.v
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Compiling source file nvdla_syn_20250506_2003/src/CKLNQD12.v
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_XXIF_libs.v
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Compiling source file nvdla_syn_20250506_2003/src/NV_NVDLA_XXIF_libs.v
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Opening include file nvdla_syn_20250506_2003/src/simulate_x_tick.vh
+Presto compilation completed successfully.
+0
+if { $analyzeStatus != 1 } {
+    puts "${synMsgErr} Analyze failed!  Aborting..."
+    exit 1
+}
+# Elaborate and switch design to current block.
+elaborate ${MODULE}
+Running PRESTO HDLC
+Presto compilation completed successfully. (NV_NVDLA_partition_m)
+Elaborated 1 design.
+Current design is now 'NV_NVDLA_partition_m'.
+Information: Building the design 'NV_NVDLA_reset'. (HDL-193)
+Presto compilation completed successfully. (NV_NVDLA_reset)
+Information: Building the design 'NV_NVDLA_sync3d'. (HDL-193)
+Presto compilation completed successfully. (NV_NVDLA_sync3d)
+Information: Building the design 'NV_NVDLA_sync3d_s'. (HDL-193)
+Presto compilation completed successfully. (NV_NVDLA_sync3d_s)
+Information: Building the design 'NV_NVDLA_cmac'. (HDL-193)
+Presto compilation completed successfully. (NV_NVDLA_cmac)
+Information: Building the design 'sync_reset'. (HDL-193)
+Presto compilation completed successfully. (sync_reset)
+Information: Building the design 'NV_BLKBOX_SRC0'. (HDL-193)
+Presto compilation completed successfully. (NV_BLKBOX_SRC0)
+Information: Building the design 'MUX2HDD2'. (HDL-193)
+Presto compilation completed successfully. (MUX2HDD2)
+Information: Building the design 'sync3d'. (HDL-193)
+Presto compilation completed successfully. (sync3d)
+Information: Building the design 'sync3d_s_ppp'. (HDL-193)
+Presto compilation completed successfully. (sync3d_s_ppp)
+Information: Building the design 'NV_NVDLA_CMAC_core'. (HDL-193)
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_core line 278 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_core.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  in_dat_pd_d1_reg   | Flip-flop |   9   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_core line 285 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_core.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| in_dat_pvld_d1_reg  | Flip-flop |   1   |  N  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_core line 290 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_core.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  in_dat_pd_d2_reg   | Flip-flop |   9   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_core line 297 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_core.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| in_dat_pvld_d2_reg  | Flip-flop |   1   |  N  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+Presto compilation completed successfully. (NV_NVDLA_CMAC_core)
+Information: Building the design 'NV_NVDLA_CMAC_reg'. (HDL-193)
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_reg line 188 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| dp2reg_consumer_reg | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_reg line 286 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| reg2dp_d0_op_en_reg | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_reg line 304 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| reg2dp_d1_op_en_reg | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_reg line 320 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v'.
+================================================================================
+|    Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+================================================================================
+| reg2dp_op_en_reg_reg | Flip-flop |   3   |  Y  | N  | Y  | N  | N  | N  | N  |
+================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_reg line 329 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  slcg_op_en_d1_reg  | Flip-flop |   7   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_reg line 336 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  slcg_op_en_d2_reg  | Flip-flop |   7   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_reg line 343 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  slcg_op_en_d3_reg  | Flip-flop |   7   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_reg line 471 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|    req_pvld_reg     | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_reg line 478 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|     req_pd_reg      | Flip-flop |  63   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_reg line 565 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| cmac_a2csb_resp_pd_reg | Flip-flop |  34   |  Y  | N  | Y  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_reg line 579 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_reg.v'.
+=====================================================================================
+|       Register Name       |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=====================================================================================
+| cmac_a2csb_resp_valid_reg | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+=====================================================================================
+Presto compilation completed successfully. (NV_NVDLA_CMAC_reg)
+Information: Building the design 'OR2D1'. (HDL-193)
+Presto compilation completed successfully. (OR2D1)
+Information: Building the design 'MUX2D4'. (HDL-193)
+Presto compilation completed successfully. (MUX2D4)
+Information: Building the design 'p_SSYNC2DO_C_PP'. (HDL-193)
+
+Inferred memory devices in process
+        in routine p_SSYNC2DO_C_PP line 22 in file
+                'nvdla_syn_20250506_2003/src/p_SSYNC2DO_C_PP.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|        q_reg        | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+|       d0_reg        | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+Presto compilation completed successfully. (p_SSYNC2DO_C_PP)
+Information: Building the design 'p_SSYNC3DO'. (HDL-193)
+
+Inferred memory devices in process
+        in routine p_SSYNC3DO line 20 in file
+                'nvdla_syn_20250506_2003/src/p_SSYNC3DO.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|       d0_reg        | Flip-flop |   1   |  N  | N  | N  | N  | N  | N  | N  |
+|        q_reg        | Flip-flop |   1   |  N  | N  | N  | N  | N  | N  | N  |
+|       d1_reg        | Flip-flop |   1   |  N  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+Presto compilation completed successfully. (p_SSYNC3DO)
+Information: Building the design 'p_SSYNC3DO_S_PPP'. (HDL-193)
+
+Inferred memory devices in process
+        in routine p_SSYNC3DO_S_PPP line 22 in file
+                'nvdla_syn_20250506_2003/src/p_SSYNC3DO_S_PPP.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|       d1_reg        | Flip-flop |   1   |  N  | N  | N  | Y  | N  | N  | N  |
+|       d0_reg        | Flip-flop |   1   |  N  | N  | N  | Y  | N  | N  | N  |
+|        q_reg        | Flip-flop |   1   |  N  | N  | N  | Y  | N  | N  | N  |
+===============================================================================
+Presto compilation completed successfully. (p_SSYNC3DO_S_PPP)
+Information: Building the design 'NV_NVDLA_CMAC_CORE_cfg'. (HDL-193)
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_cfg line 34 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_cfg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|    op_en_d1_reg     | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_cfg line 42 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_cfg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   op_done_d1_reg    | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_cfg line 50 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_cfg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   cfg_reg_en_reg    | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_cfg line 58 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_cfg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|    cfg_is_wg_reg    | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_cfg line 66 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_cfg.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  cfg_reg_en_d1_reg  | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+Presto compilation completed successfully. (NV_NVDLA_CMAC_CORE_cfg)
+Information: Building the design 'NV_NVDLA_CMAC_CORE_rt_in'. (HDL-193)
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 317 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_dat_pvld_d1_reg | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 324 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_dat_mask_d1_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 338 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| in_rt_dat_pd_d1_reg | Flip-flop |   9   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 353 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data0_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 364 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data1_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 375 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data2_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 386 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data3_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 397 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data4_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 408 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data5_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 419 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data6_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 430 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data7_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 440 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+================================================================================
+|    Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+================================================================================
+| in_rt_wt_pvld_d1_reg | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 447 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+================================================================================
+|    Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+================================================================================
+| in_rt_wt_mask_d1_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 461 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| in_rt_wt_sel_d1_reg | Flip-flop |   4   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 476 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data0_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 487 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data1_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 498 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data2_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 509 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data3_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 520 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data4_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 531 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data5_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 542 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data6_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 553 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data7_d1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 563 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_dat_pvld_d2_reg | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 570 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_dat_mask_d2_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 584 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| in_rt_dat_pd_d2_reg | Flip-flop |   9   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 599 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data0_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 610 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data1_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 621 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data2_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 632 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data3_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 643 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data4_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 654 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data5_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 665 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data6_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 676 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| in_rt_dat_data7_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 686 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+================================================================================
+|    Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+================================================================================
+| in_rt_wt_pvld_d2_reg | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 693 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+================================================================================
+|    Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+================================================================================
+| in_rt_wt_mask_d2_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 707 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| in_rt_wt_sel_d2_reg | Flip-flop |   4   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 722 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data0_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 733 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data1_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 744 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data2_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 755 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data3_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 766 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data4_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 777 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data5_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 788 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data6_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_in line 799 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_in.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| in_rt_wt_data7_d2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+=================================================================================
+Presto compilation completed successfully. (NV_NVDLA_CMAC_CORE_rt_in)
+Information: Building the design 'NV_NVDLA_CMAC_CORE_active'. (HDL-193)
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 346 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|    wt_pre_nz_reg    | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 361 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt_pre_sel_reg    | Flip-flop |   4   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 368 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 378 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 388 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 398 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 408 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 418 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 428 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 438 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 471 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt0_sd_pvld_reg   | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 479 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|    wt0_sd_nz_reg    | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 494 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt0_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 504 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt0_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 514 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt0_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 524 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt0_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 534 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt0_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 544 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt0_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 554 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt0_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 564 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt0_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 576 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt1_sd_pvld_reg   | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 584 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|    wt1_sd_nz_reg    | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 599 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt1_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 609 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt1_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 619 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt1_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 629 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt1_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 639 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt1_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 649 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt1_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 659 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt1_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 669 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt1_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 681 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt2_sd_pvld_reg   | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 689 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|    wt2_sd_nz_reg    | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 704 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt2_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 714 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt2_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 724 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt2_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 734 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt2_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 744 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt2_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 754 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt2_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 764 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt2_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 774 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt2_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 786 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt3_sd_pvld_reg   | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 794 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|    wt3_sd_nz_reg    | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 809 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt3_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 819 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt3_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 829 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt3_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 839 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt3_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 849 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt3_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 859 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt3_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 869 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt3_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 879 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt3_sd_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 890 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===================================================================================
+|      Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===================================================================================
+| dat_actv_stripe_end_reg | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 922 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt0_actv_vld_reg   | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 930 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt0_actv_pvld_reg  | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 938 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt0_actv_nz_reg   | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 952 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt0_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 962 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt0_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 972 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt0_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 982 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt0_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 992 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt0_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1002 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt0_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1012 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt0_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1022 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt0_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1036 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt1_actv_vld_reg   | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1044 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt1_actv_pvld_reg  | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1052 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt1_actv_nz_reg   | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1066 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt1_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1076 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt1_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1086 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt1_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1096 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt1_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1106 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt1_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1116 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt1_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1126 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt1_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1136 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt1_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1150 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt2_actv_vld_reg   | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1158 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt2_actv_pvld_reg  | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1166 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt2_actv_nz_reg   | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1180 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt2_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1190 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt2_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1200 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt2_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1210 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt2_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1220 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt2_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1230 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt2_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1240 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt2_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1250 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt2_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1264 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt3_actv_vld_reg   | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1272 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt3_actv_pvld_reg  | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1280 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   wt3_actv_nz_reg   | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1294 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt3_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1304 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt3_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1314 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt3_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1324 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt3_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1334 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt3_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1344 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt3_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1354 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt3_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1364 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  wt3_actv_data_reg  | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1415 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  dat_pre_pvld_reg   | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1423 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|   dat_pre_nz_reg    | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1455 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  dat_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1465 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  dat_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1475 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  dat_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1485 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  dat_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1495 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  dat_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1505 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  dat_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1515 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  dat_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1525 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  dat_pre_data_reg   | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1535 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+=================================================================================
+|     Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+=================================================================================
+| dat_pre_stripe_st_reg | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+=================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1542 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_pre_stripe_end_reg | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1589 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_pvld_reg0_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1597 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+================================================================================
+|    Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+================================================================================
+| dat_actv_nz_reg0_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1611 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg0_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1621 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg0_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1631 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg0_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1641 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg0_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1651 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg0_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1661 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg0_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1671 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg0_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1681 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg0_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1692 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_pvld_reg1_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1700 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+================================================================================
+|    Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+================================================================================
+| dat_actv_nz_reg1_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1714 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1724 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1734 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1744 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1754 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1764 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1774 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1784 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg1_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1795 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_pvld_reg2_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1803 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+================================================================================
+|    Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+================================================================================
+| dat_actv_nz_reg2_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1817 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1827 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1837 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1847 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1857 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1867 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1877 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1887 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg2_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1898 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_pvld_reg3_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1906 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+================================================================================
+|    Register Name     |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+================================================================================
+| dat_actv_nz_reg3_reg | Flip-flop |   8   |  Y  | N  | Y  | N  | N  | N  | N  |
+================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1920 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg3_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1930 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg3_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1940 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg3_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1950 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg3_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1960 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg3_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1970 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg3_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1980 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg3_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_active line 1990 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_active.v'.
+==================================================================================
+|     Register Name      |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+==================================================================================
+| dat_actv_data_reg3_reg | Flip-flop |   8   |  Y  | N  | N  | N  | N  | N  | N  |
+==================================================================================
+Presto compilation completed successfully. (NV_NVDLA_CMAC_CORE_active)
+Information: Building the design 'NV_NVDLA_CMAC_CORE_mac'. (HDL-193)
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_mac line 298 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_mac.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  sum_out_d0_d1_reg  | Flip-flop |  19   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_mac line 305 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_mac.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  pp_pvld_d0_d1_reg  | Flip-flop |   1   |  N  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_mac line 310 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_mac.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  sum_out_d0_d2_reg  | Flip-flop |  19   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_mac line 317 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_mac.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  pp_pvld_d0_d2_reg  | Flip-flop |   1   |  N  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_mac line 322 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_mac.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  sum_out_d0_d3_reg  | Flip-flop |  19   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_mac line 329 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_mac.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  pp_pvld_d0_d3_reg  | Flip-flop |   1   |  N  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+Presto compilation completed successfully. (NV_NVDLA_CMAC_CORE_mac)
+Information: Building the design 'NV_NVDLA_CMAC_CORE_rt_out'. (HDL-193)
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 99 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  cfg_reg_en_d1_reg  | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 107 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  cfg_is_wg_d1_reg   | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 168 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_pvld_d1_reg  | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 176 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_mask_d1_reg  | Flip-flop |   4   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 184 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  out_rt_pd_d1_reg   | Flip-flop |   9   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 199 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_data0_d1_reg | Flip-flop |  19   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 210 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_data1_d1_reg | Flip-flop |  19   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 221 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_data2_d1_reg | Flip-flop |  19   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 232 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_data3_d1_reg | Flip-flop |  19   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 243 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_pvld_d2_reg  | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 251 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_mask_d2_reg  | Flip-flop |   4   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 259 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|  out_rt_pd_d2_reg   | Flip-flop |   9   |  Y  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 274 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_data0_d2_reg | Flip-flop |  19   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 285 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_data1_d2_reg | Flip-flop |  19   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 296 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_data2_d2_reg | Flip-flop |  19   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 307 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_data3_d2_reg | Flip-flop |  19   |  Y  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 337 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_done_d1_reg  | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 345 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_done_d2_reg  | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_CORE_rt_out line 353 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_CORE_rt_out.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| out_rt_done_d3_reg  | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+Presto compilation completed successfully. (NV_NVDLA_CMAC_CORE_rt_out)
+Information: Building the design 'NV_NVDLA_CMAC_CORE_slcg'. (HDL-193)
+Presto compilation completed successfully. (NV_NVDLA_CMAC_CORE_slcg)
+Information: Building the design 'NV_NVDLA_CMAC_REG_single'. (HDL-193)
+
+Statistics for case statements in always block at line 61 in file
+        'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_REG_single.v'
+===============================================
+|           Line           |  full/ parallel  |
+===============================================
+|            66            |    auto/auto     |
+===============================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_REG_single line 79 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_REG_single.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|    producer_reg     | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+Presto compilation completed successfully. (NV_NVDLA_CMAC_REG_single)
+Information: Building the design 'NV_NVDLA_CMAC_REG_dual'. (HDL-193)
+
+Statistics for case statements in always block at line 63 in file
+        'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_REG_dual.v'
+===============================================
+|           Line           |  full/ parallel  |
+===============================================
+|            68            |    auto/auto     |
+===============================================
+
+Inferred memory devices in process
+        in routine NV_NVDLA_CMAC_REG_dual line 81 in file
+                'nvdla_syn_20250506_2003/src/NV_NVDLA_CMAC_REG_dual.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+| proc_precision_reg  | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+| proc_precision_reg  | Flip-flop |   1   |  N  | N  | N  | Y  | N  | N  | N  |
+|    conv_mode_reg    | Flip-flop |   1   |  N  | N  | Y  | N  | N  | N  | N  |
+===============================================================================
+Presto compilation completed successfully. (NV_NVDLA_CMAC_REG_dual)
+Information: Building the design 'DW02_multp' instantiated from design 'NV_NVDLA_CMAC_CORE_mac' with
+        the parameters "8,8,18". (HDL-193)
+Warning: Cannot find the design 'DW02_multp' in the library 'WORK'. (LBR-1)
+Information: Building the design 'DW02_sum' instantiated from design 'NV_NVDLA_CMAC_CORE_mac' with
+        the parameters "16,19". (HDL-193)
+Warning: Cannot find the design 'DW02_sum' in the library 'WORK'. (LBR-1)
+Information: Building the design 'NV_CLK_gate_power'. (HDL-193)
+Presto compilation completed successfully. (NV_CLK_gate_power)
+Information: Building the design 'CKLNQD12'. (HDL-193)
+
+Inferred memory devices in process
+        in routine CKLNQD12 line 20 in file
+                'nvdla_syn_20250506_2003/src/CKLNQD12.v'.
+===============================================================================
+|    Register Name    |   Type    | Width | Bus | MB | AR | AS | SR | SS | ST |
+===============================================================================
+|       qd_reg        | Flip-flop |   1   |  N  | N  | N  | N  | N  | N  | N  |
+===============================================================================
+Presto compilation completed successfully. (CKLNQD12)
+Information: Building the design 'DW02_multp' instantiated from design 'NV_NVDLA_CMAC_CORE_mac' with
+        the parameters "8,8,18". (HDL-193)
+Warning: Cannot find the design 'DW02_multp' in the library 'WORK'. (LBR-1)
+Information: Building the design 'DW02_sum' instantiated from design 'NV_NVDLA_CMAC_CORE_mac' with
+        the parameters "16,19". (HDL-193)
+Warning: Cannot find the design 'DW02_sum' in the library 'WORK'. (LBR-1)
+Warning: Unable to resolve reference 'DW02_multp' in 'NV_NVDLA_CMAC_CORE_mac'. (LINK-5)
+Warning: Unable to resolve reference 'DW02_sum' in 'NV_NVDLA_CMAC_CORE_mac'. (LINK-5)
+1
+current_design ${MODULE}
+Current design is 'NV_NVDLA_partition_m'.
+{NV_NVDLA_partition_m}
+# Libraries for physical synthesis
+# remove mw first
+if {[shell_is_in_exploration_mode]} {
+    if {[ file exists ${MW_DIR}/${MODULE}_de.mw]} {
+        exec rm -rf ${MW_DIR}/${MODULE}_de.mw
+    }
+} else {
+        if {[ file exists ${MW_DIR}/${MODULE}_dcg.mw]} {
+        exec rm -rf ${MW_DIR}/${MODULE}_dcg.mw
+        }
+}
+if {[shell_is_in_topographical_mode]} {
+ set mw_logic1_net "VDD"
+ set mw_logic0_net "VSS"
+}
+set mw_reference_library [list]
+if {[shell_is_in_topographical_mode]} {
+    set mw_reference_library ${MW_LIB}
+        set_app_var mw_reference_library $mw_reference_library
+    
+    # Create milkyway design database for block
+    extend_mw_layers
+        if {[shell_is_in_exploration_mode]} {
+        create_mw_lib -technology ${TF_FILE} -mw_reference_library $mw_reference_library -open ${MW_DIR}/${MODULE}_de.mw
+        } else {
+                create_mw_lib -technology ${TF_FILE} -mw_reference_library $mw_reference_library -open ${MW_DIR}/${MODULE}_dcg.mw
+        }
+    # read technology files
+    set_tlu_plus_files -max_tluplus ${TLUPLUS_FILE} -min_tluplus ${TLUPLUS_FILE} -tech2itf_map ${TLUPLUS_MAPPING_FILE}
+    redirect -file ${REPORT_DIR}/itf_check.rpt { check_tlu_plus_files }
+        redirect -file ${REPORT_DIR}/lib_report.rpt { report_lib $library_name }
+
+    if { ${HORIZONTAL_LAYERS} != "" } {
+        set_preferred_routing_direction -layers "$HORIZONTAL_LAYERS" -direction horizontal 
+    }
+    if { ${VERTICAL_LAYERS} != "" } {
+        set_preferred_routing_direction -layers "$VERTICAL_LAYERS" -direction vertical 
+    }
+    
+}
+if ![ link ] {
+    puts "${synMsgErr} Failed to link. Aborting..."
+    exit 1
+}
+
+  Linking design 'NV_NVDLA_partition_m'
+  Using the following designs and libraries:
+  --------------------------------------------------------------------------
+
+Information: Building the design 'DW02_multp' instantiated from design 'NV_NVDLA_CMAC_CORE_mac' with
+        the parameters "8,8,18". (HDL-193)
+Warning: Cannot find the design 'DW02_multp' in the library 'WORK'. (LBR-1)
+Information: Building the design 'DW02_sum' instantiated from design 'NV_NVDLA_CMAC_CORE_mac' with
+        the parameters "16,19". (HDL-193)
+Warning: Cannot find the design 'DW02_sum' in the library 'WORK'. (LBR-1)
+Warning: Unable to resolve reference 'DW02_multp' in 'NV_NVDLA_CMAC_CORE_mac'. (LINK-5)
+Warning: Unable to resolve reference 'DW02_sum' in 'NV_NVDLA_CMAC_CORE_mac'. (LINK-5)
+Error: Failed to link. Aborting...
+
+Memory usage for this session 165 Mbytes.
+Memory usage for this session including child processes 165 Mbytes.
+CPU usage for this session 5 seconds ( 0.00 hours ).
+Elapsed time for this session 6 seconds ( 0.00 hours ).
+
+Thank you...
+

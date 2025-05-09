@@ -1,0 +1,67 @@
+ 
+****************************************
+check_design summary:
+Version:     T-2022.03-SP3
+Date:        Tue May  6 21:56:42 2025
+****************************************
+
+                   Name                                            Total
+--------------------------------------------------------------------------------
+Inputs/Outputs                                                     49
+    Unconnected ports (LINT-28)                                    49
+
+Cells                                                               1
+    Cells do not drive (LINT-1)                                     1
+--------------------------------------------------------------------------------
+
+Warning: In design 'NV_NVDLA_partition_o', cell 'u_NV_NVDLA_csb_master/u_fifo_nvdla2csb/ram/U143' does not drive any nets. (LINT-1)
+Warning: In design 'NV_NVDLA_partition_o', port 'cdma_dat2mcif_rd_req_pd[2]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'cdma_dat2mcif_rd_req_pd[1]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'cdma_dat2mcif_rd_req_pd[0]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'cdma_wt2mcif_rd_req_pd[2]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'cdma_wt2mcif_rd_req_pd[1]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'cdma_wt2mcif_rd_req_pd[0]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'sdp_b2mcif_rd_req_pd[2]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'sdp_b2mcif_rd_req_pd[1]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'sdp_b2mcif_rd_req_pd[0]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'sdp_n2mcif_rd_req_pd[2]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'sdp_n2mcif_rd_req_pd[1]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'sdp_n2mcif_rd_req_pd[0]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'noc2mcif_axi_b_bid[7]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'noc2mcif_axi_b_bid[6]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'noc2mcif_axi_b_bid[5]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'noc2mcif_axi_b_bid[4]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'noc2mcif_axi_b_bid[3]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'noc2mcif_axi_r_rid[7]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'noc2mcif_axi_r_rid[6]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'noc2mcif_axi_r_rid[5]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'noc2mcif_axi_r_rid[4]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'noc2mcif_axi_r_rlast' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[31]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[30]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[29]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[28]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[27]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[26]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[25]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[24]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[23]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[22]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[21]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[20]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[19]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[18]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[17]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[16]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[15]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[14]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[13]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[12]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[11]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[10]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'pwrbus_ram_pd[9]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'sdp2mcif_rd_req_pd[2]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'sdp2mcif_rd_req_pd[1]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'sdp2mcif_rd_req_pd[0]' is not connected to any nets. (LINT-28)
+Warning: In design 'NV_NVDLA_partition_o', port 'sdp2mcif_wr_req_pd[64]' is not connected to any nets. (LINT-28)
+1

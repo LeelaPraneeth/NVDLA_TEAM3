@@ -1,0 +1,17 @@
+`ifndef _NVDLA_BDMA_RESOURCE_SV_
+`define _NVDLA_BDMA_RESOURCE_SV_
+
+//-------------------------------------------------------------------------------------
+//
+// CLASS: nvdla_bdma_resource
+//
+// @description: various hardware resources of bdma sub module
+//-------------------------------------------------------------------------------------
+
+class nvdla_bdma_resource extends nvdla_base_resource;
+
+    // enum define
+    //:| import spec2constrain
+    //:| global spec2cons
+    //:| spec2cons = spec2constrain.Spec2Cons()
+    //:| spec2cons.enum_gen(['NVDLA_BDMA'])
